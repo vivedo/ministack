@@ -71,6 +71,7 @@ _STARTUP_PARAMS = (
 )
 
 _TEXT_OID = 25
+_RELAY_CHUNK = 1 << 16  # backend socket read size for _backend_relay
 
 
 def _frame(type_byte, payload):
@@ -1399,15 +1400,34 @@ async def _backend_relay(conn, b_reader, c_writer):
     ReadyForQuery carries the backend's own view of the transaction block, so
     it is the authoritative source for ``in_txn`` regardless of which protocol
     the client used to open or close the transaction.
+
+    The socket is read in chunks and every complete frame in a chunk goes to
+    the client in one write: a large result is thousands of DataRow frames,
+    and a read/write/drain per frame made the relay the bottleneck.
     """
+    buf = bytearray()
     while True:
-        type_byte, payload = await _read_frame(b_reader)
-        if type_byte == b"Z" and payload:
-            conn.txn.note_backend_status(payload[:1])
-        if conn.capture is not None:
-            conn.capture.put_nowait((type_byte, payload))
-        else:
-            c_writer.write(_frame(type_byte, payload))
+        chunk = await b_reader.read(_RELAY_CHUNK)
+        if not chunk:
+            raise asyncio.IncompleteReadError(bytes(buf), None)
+        buf += chunk
+        out = []
+        pos, end_of_data = 0, len(buf)
+        while end_of_data - pos >= 5:
+            end = pos + 1 + int.from_bytes(buf[pos + 1:pos + 5], "big")
+            if end > end_of_data:
+                break
+            type_byte = bytes(buf[pos:pos + 1])
+            if type_byte == b"Z" and end > pos + 5:
+                conn.txn.note_backend_status(bytes(buf[pos + 5:pos + 6]))
+            if conn.capture is not None:
+                conn.capture.put_nowait((type_byte, bytes(buf[pos + 5:end])))
+            else:
+                out.append(buf[pos:end])
+            pos = end
+        del buf[:pos]
+        if out:
+            c_writer.write(b"".join(out))
             await c_writer.drain()
 
 

@@ -7,6 +7,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **DSQL — the wire proxy forwards query results in batches** — with `DSQL_STRICT=1`, the proxy in front of each cluster's Postgres backend read, re-framed and flushed every backend message separately, so a large result set cost one round of awaits per row and the proxy, not Postgres, set the speed. It now reads the backend socket in 64 KiB chunks and forwards every complete message in a chunk with one write. In a local benchmark against the same `postgres:16-alpine` backend (8 connections), a 5,000-row read went from 6% to about 100% of direct-Postgres throughput and a 100-row read from 8% to 47–69%; transaction-state tracking and the proxy's own probe queries are unchanged.
+
 ## [1.5.21] — 2026-10-03
 
 ### Added
